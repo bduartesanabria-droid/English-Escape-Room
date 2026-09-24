@@ -1,0 +1,6 @@
+{
+  "name": "English Escape Room",
+  "description": "Cyber-noir Point & Click escape room game and AI pedagogical tutor teaching English grammar (Verb To Be, Daily Routines, Tenses, and Modals).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
