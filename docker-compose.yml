@@ -11,4 +11,10 @@ services:
       # back to its built-in pedagogical rule engine.
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - APP_URL=${APP_URL:-}
+    volumes:
+      # Persist the SQLite database across container restarts
+      - escape-room-data:/app/data
     restart: unless-stopped
+
+volumes:
+  escape-room-data:

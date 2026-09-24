@@ -3,6 +3,17 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
+import {
+  createUser,
+  getUserById,
+  getUserByEmail,
+  createSession,
+  getSessionById,
+  listSessionsByUser,
+  updateSession,
+  incrementCounter,
+  completeSession,
+} from './db';
 
 dotenv.config();
 
@@ -92,6 +103,19 @@ app.post('/api/evaluate-puzzle', async (req, res) => {
     } = req.body;
 
     const isCorrect = String(userAnswer).trim().toLowerCase() === String(correctAnswer).trim().toLowerCase();
+
+    // Track the attempt in SQLite when a sessionId is provided
+    const sessionId = req.body?.sessionId as string | undefined;
+    if (sessionId) {
+      try {
+        incrementCounter(sessionId, 'total_attempts');
+        if (isCorrect && roomIndex !== undefined) {
+          updateSession(sessionId, { currentRoomId: Number(roomIndex) + 1 });
+        }
+      } catch (sessionErr) {
+        console.error('Session tracking failed:', sessionErr);
+      }
+    }
 
     // If Gemini is available, generate dynamic pedagogical feedback
     if (ai) {
@@ -203,6 +227,16 @@ app.post('/api/request-hint', async (req, res) => {
     const { puzzleId, topic, promptText, hintTier } = req.body;
     const tier = Number(hintTier) || 1;
 
+    // Track the hint in SQLite when a sessionId is provided
+    const sessionId = req.body?.sessionId as string | undefined;
+    if (sessionId) {
+      try {
+        incrementCounter(sessionId, 'total_hints_used');
+      } catch (sessionErr) {
+        console.error('Session tracking failed:', sessionErr);
+      }
+    }
+
     if (ai) {
       try {
         const prompt = `
@@ -261,6 +295,146 @@ Return JSON:
       hint: `Analyze the sentence carefully. Notice the subject and the time markers associated with ${topic}.`,
       pedagogicalRule: `Target: ${topic}`,
     });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
+/**
+ * Endpoint: POST /api/users
+ * Register a player (or return the existing one when the email already exists).
+ */
+app.post('/api/users', (req, res) => {
+  try {
+    const { fullName, email, role } = req.body || {};
+    if (!fullName || !email) {
+      return res.status(400).json({ error: 'fullName and email are required' });
+    }
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const existing = getUserByEmail(normalizedEmail);
+    if (existing) return res.json(existing);
+    const user = createUser(String(fullName).trim(), normalizedEmail, role || 'student');
+    res.status(201).json(user);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
+/**
+ * Endpoint: GET /api/users?email=... | ?id=...
+ * Look up a player.
+ */
+app.get('/api/users', (req, res) => {
+  try {
+    const email = req.query.email as string | undefined;
+    const id = req.query.id as string | undefined;
+    const user = email
+      ? getUserByEmail(String(email).trim().toLowerCase())
+      : id
+        ? getUserById(String(id))
+        : undefined;
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json(user);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
+/**
+ * Endpoint: GET /api/users/:userId/sessions
+ * List all game sessions for a player (most recent first).
+ */
+app.get('/api/users/:userId/sessions', (req, res) => {
+  try {
+    res.json(listSessionsByUser(req.params.userId));
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
+/**
+ * Endpoint: POST /api/sessions
+ * Start a new game session for a player.
+ */
+app.post('/api/sessions', (req, res) => {
+  try {
+    const { userId } = req.body || {};
+    if (!userId) return res.status(400).json({ error: 'userId is required' });
+    if (!getUserById(String(userId))) return res.status(404).json({ error: 'User not found' });
+    res.status(201).json(createSession(String(userId)));
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
+/**
+ * Endpoint: GET /api/sessions/:id
+ * Fetch a single game session.
+ */
+app.get('/api/sessions/:id', (req, res) => {
+  try {
+    const session = getSessionById(req.params.id);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    res.json(session);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
+/**
+ * Endpoint: PATCH /api/sessions/:id
+ * Partial update of progress fields:
+ * { currentRoomId?, elapsedTimeSeconds?, totalAttempts?, totalHintsUsed?, isCompleted?, completedAt? }
+ */
+app.patch('/api/sessions/:id', (req, res) => {
+  try {
+    const session = updateSession(req.params.id, req.body || {});
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    res.json(session);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
+/**
+ * Endpoint: POST /api/sessions/:id/attempt
+ * Record a puzzle attempt (increments total_attempts; advances current_room_id when correct).
+ */
+app.post('/api/sessions/:id/attempt', (req, res) => {
+  try {
+    if (!getSessionById(req.params.id)) return res.status(404).json({ error: 'Session not found' });
+    incrementCounter(req.params.id, 'total_attempts');
+    const { currentRoomId } = req.body || {};
+    if (currentRoomId) updateSession(req.params.id, { currentRoomId: Number(currentRoomId) });
+    res.json(getSessionById(req.params.id));
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
+/**
+ * Endpoint: POST /api/sessions/:id/hint
+ * Record a hint consumed (increments total_hints_used).
+ */
+app.post('/api/sessions/:id/hint', (req, res) => {
+  try {
+    if (!getSessionById(req.params.id)) return res.status(404).json({ error: 'Session not found' });
+    incrementCounter(req.params.id, 'total_hints_used');
+    res.json(getSessionById(req.params.id));
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
+/**
+ * Endpoint: POST /api/sessions/:id/complete
+ * Mark a session as completed.
+ */
+app.post('/api/sessions/:id/complete', (req, res) => {
+  try {
+    const session = completeSession(req.params.id);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    res.json(session);
   } catch (err: any) {
     res.status(500).json({ error: err?.message });
   }
