@@ -70,7 +70,8 @@ export interface Puzzle {
     type: string;
     color: 'primary' | 'secondary' | 'tertiary';
   }[];
-  unlockedItem: InventoryItem;
+  // Reward granted when the module's last question is solved
+  unlockedItem?: InventoryItem;
 }
 
 export interface RoomData {

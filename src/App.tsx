@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { TabType, InventoryItem, Hotspot, EvaluationResponse } from './types/game';
+import { TabType, InventoryItem, Hotspot, EvaluationResponse, RoomData } from './types/game';
 import { roomsData } from './data/roomsData';
 import { soundFx } from './utils/audio';
 import { Header } from './components/Header';
@@ -13,6 +13,10 @@ import { DevModal } from './components/DevModal';
 import { ItemInspectModal } from './components/ItemInspectModal';
 import { HintModal } from './components/HintModal';
 
+// Reward item of a module: granted when its last question is solved
+const getRoomReward = (room: RoomData): InventoryItem | undefined =>
+  room.puzzles[room.puzzles.length - 1]?.unlockedItem;
+
 export default function App() {
   // Navigation & Room state
   const [activeTab, setActiveTab] = useState<TabType>('vault-room');
@@ -20,6 +24,8 @@ export default function App() {
   const [roomsUnlocked, setRoomsUnlocked] = useState<boolean[]>([true, false, false, false]);
   const [roomsCompleted, setRoomsCompleted] = useState<boolean[]>([false, false, false, false]);
   const [roomProgress, setRoomProgress] = useState<number[]>([75, 0, 0, 0]);
+  // Current question index (0 or 1) inside each module
+  const [puzzleStep, setPuzzleStep] = useState<number[]>([0, 0, 0, 0]);
 
   // Telemetry & Timer
   const [timerSeconds, setTimerSeconds] = useState<number>(875); // 14:35
@@ -77,7 +83,8 @@ export default function App() {
   });
 
   const currentRoom = roomsData[currentRoomIndex] || roomsData[0];
-  const currentPuzzle = currentRoom.puzzles[0];
+  const currentStep = puzzleStep[currentRoomIndex] ?? 0;
+  const currentPuzzle = currentRoom.puzzles[currentStep] || currentRoom.puzzles[0];
   const currentEvaluationResult = evaluationResults[currentRoomIndex] || null;
 
   // Countdown timer effect
@@ -126,30 +133,83 @@ export default function App() {
     }
   };
 
+  // Mark a module as solved: set progress, grant its reward and unlock the next module
+  const completeRoom = (roomIdx: number) => {
+    const reward = getRoomReward(roomsData[roomIdx]);
+
+    setRoomsCompleted((prev) => {
+      const updated = [...prev];
+      updated[roomIdx] = true;
+      return updated;
+    });
+
+    setRoomProgress((prev) => {
+      const updated = [...prev];
+      updated[roomIdx] = 100;
+      if (roomIdx < 3 && updated[roomIdx + 1] === 0) {
+        updated[roomIdx + 1] = 50;
+      }
+      return updated;
+    });
+
+    if (reward) {
+      setInventory((prev) => {
+        if (prev.some((item) => item.id === reward.id)) return prev;
+        return [...prev, reward];
+      });
+    }
+
+    if (roomIdx < 3) {
+      setRoomsUnlocked((prev) => {
+        const updated = [...prev];
+        updated[roomIdx + 1] = true;
+        return updated;
+      });
+    }
+  };
+
   // Puzzle answer submission & evaluation
   const handleEvaluatePuzzle = async (selectedOptionId: string) => {
+    const roomIdx = currentRoomIndex;
+    const room = roomsData[roomIdx] || roomsData[0];
+    const step = puzzleStep[roomIdx] ?? 0;
+    const puzzle = room.puzzles[step] || room.puzzles[0];
+    const isLastStep = step >= room.puzzles.length - 1;
+    const reward = getRoomReward(room);
+
     setIsEvaluating(true);
     setTotalAttempts((prev) => prev + 1);
 
-    const isOptionCorrect = selectedOptionId === currentPuzzle.correctOptionId;
-    const selectedOption = currentPuzzle.options.find((o) => o.id === selectedOptionId);
+    const isOptionCorrect = selectedOptionId === puzzle.correctOptionId;
+    const selectedOption = puzzle.options.find((o) => o.id === selectedOptionId);
 
     try {
+      // Correct answer on a non-final question: advance to the next question of the same module
+      if (isOptionCorrect && !isLastStep) {
+        setPuzzleStep((prev) => {
+          const updated = [...prev];
+          updated[roomIdx] = step + 1;
+          return updated;
+        });
+        setEvaluationResults((prev) => ({ ...prev, [roomIdx]: null }));
+        return;
+      }
+
       // Call backend AI pedagogical evaluator endpoint
       const response = await fetch('/api/evaluate-puzzle', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          puzzleId: currentPuzzle.id,
-          roomIndex: currentRoomIndex,
-          topic: currentPuzzle.topic,
-          promptText: currentPuzzle.promptSentence,
+          puzzleId: puzzle.id,
+          roomIndex: roomIdx,
+          topic: puzzle.topic,
+          promptText: puzzle.promptSentence,
           userAnswer: selectedOption?.text || selectedOptionId,
           correctAnswer:
-            currentPuzzle.options.find((o) => o.id === currentPuzzle.correctOptionId)?.text ||
-            currentPuzzle.correctOptionId,
-          roomName: currentRoom.name,
-          unlockedItemName: currentPuzzle.unlockedItem.title,
+            puzzle.options.find((o) => o.id === puzzle.correctOptionId)?.text ||
+            puzzle.correctOptionId,
+          roomName: room.name,
+          unlockedItemName: reward?.title,
         }),
       });
 
@@ -157,47 +217,11 @@ export default function App() {
 
       setEvaluationResults((prev) => ({
         ...prev,
-        [currentRoomIndex]: data,
+        [roomIdx]: data,
       }));
 
-      if (data.isCorrect || isOptionCorrect) {
-        // Mark room as completed
-        setRoomsCompleted((prev) => {
-          const updated = [...prev];
-          updated[currentRoomIndex] = true;
-          return updated;
-        });
-
-        // Set progress to 100%
-        setRoomProgress((prev) => {
-          const updated = [...prev];
-          updated[currentRoomIndex] = 100;
-          return updated;
-        });
-
-        // Add unlocked item to inventory if not already present
-        setInventory((prev) => {
-          if (prev.some((item) => item.id === currentPuzzle.unlockedItem.id)) {
-            return prev;
-          }
-          return [...prev, currentPuzzle.unlockedItem];
-        });
-
-        // Unlock next room if available
-        if (currentRoomIndex < 3) {
-          setRoomsUnlocked((prev) => {
-            const updated = [...prev];
-            updated[currentRoomIndex + 1] = true;
-            return updated;
-          });
-          setRoomProgress((prev) => {
-            const updated = [...prev];
-            if (updated[currentRoomIndex + 1] === 0) {
-              updated[currentRoomIndex + 1] = 50;
-            }
-            return updated;
-          });
-        }
+      if (isLastStep && (data.isCorrect || isOptionCorrect)) {
+        completeRoom(roomIdx);
       }
     } catch (err) {
       console.error('Network evaluation failed, using local pedagogical engine:', err);
@@ -206,39 +230,19 @@ export default function App() {
       const fallbackResult: EvaluationResponse = {
         isCorrect: isOptionCorrect,
         feedbackMessage: isOptionCorrect
-          ? `Linguistic syntax verified! Your mastery of ${currentPuzzle.topic} has authorized terminal override.`
-          : `Not quite! ${currentPuzzle.pedagogicalExplanation}`,
-        hint: currentPuzzle.pedagogicalRuleTitle,
-        unlockedItem: isOptionCorrect ? currentPuzzle.unlockedItem.title : null,
+          ? `Linguistic syntax verified! Your mastery of ${puzzle.topic} has authorized terminal override.`
+          : `Not quite! ${puzzle.pedagogicalExplanation}`,
+        hint: puzzle.pedagogicalRuleTitle,
+        unlockedItem: isOptionCorrect ? reward?.title || null : null,
       };
 
       setEvaluationResults((prev) => ({
         ...prev,
-        [currentRoomIndex]: fallbackResult,
+        [roomIdx]: fallbackResult,
       }));
 
-      if (isOptionCorrect) {
-        setRoomsCompleted((prev) => {
-          const updated = [...prev];
-          updated[currentRoomIndex] = true;
-          return updated;
-        });
-        setRoomProgress((prev) => {
-          const updated = [...prev];
-          updated[currentRoomIndex] = 100;
-          return updated;
-        });
-        setInventory((prev) => {
-          if (prev.some((item) => item.id === currentPuzzle.unlockedItem.id)) return prev;
-          return [...prev, currentPuzzle.unlockedItem];
-        });
-        if (currentRoomIndex < 3) {
-          setRoomsUnlocked((prev) => {
-            const updated = [...prev];
-            updated[currentRoomIndex + 1] = true;
-            return updated;
-          });
-        }
+      if (isLastStep && isOptionCorrect) {
+        completeRoom(roomIdx);
       }
     } finally {
       setIsEvaluating(false);
@@ -307,6 +311,7 @@ export default function App() {
     setRoomsUnlocked([true, false, false, false]);
     setRoomsCompleted([false, false, false, false]);
     setRoomProgress([75, 0, 0, 0]);
+    setPuzzleStep([0, 0, 0, 0]);
     setTimerSeconds(875);
     setHintsUsed(1);
     setTotalAttempts(2);
@@ -353,8 +358,11 @@ export default function App() {
 
         {activeTab === 'cipher-decoders' && (
           <CipherDecoderScreen
+            key={`${currentRoomIndex}-${currentStep}`}
             puzzle={currentPuzzle}
             currentRoom={currentRoom}
+            questionNumber={currentStep + 1}
+            questionTotal={currentRoom.puzzles.length}
             onReturnToVault={() => setActiveTab('vault-room')}
             onSuccessProceed={handleSuccessProceed}
             onRequestHint={handleRequestHint}
@@ -436,16 +444,33 @@ export default function App() {
           setRoomsUnlocked([true, true, true, true]);
           setRoomProgress([100, 100, 100, 100]);
           setRoomsCompleted([true, true, true, true]);
+          setPuzzleStep(roomsData.map((room) => room.puzzles.length - 1));
           setInventory([
             initialNotebook,
-            roomsData[0].puzzles[0].unlockedItem,
-            roomsData[1].puzzles[0].unlockedItem,
-            roomsData[2].puzzles[0].unlockedItem,
-            roomsData[3].puzzles[0].unlockedItem,
+            ...roomsData
+              .map(getRoomReward)
+              .filter((item): item is InventoryItem => item !== undefined),
           ]);
         }}
         onCompleteCurrentRoom={() => {
-          handleEvaluatePuzzle(currentPuzzle.correctOptionId);
+          // Instructor override: solve every question of the current module at once
+          const roomIdx = currentRoomIndex;
+          const room = roomsData[roomIdx];
+          setPuzzleStep((prev) => {
+            const updated = [...prev];
+            updated[roomIdx] = room.puzzles.length - 1;
+            return updated;
+          });
+          setEvaluationResults((prev) => ({
+            ...prev,
+            [roomIdx]: {
+              isCorrect: true,
+              feedbackMessage: 'Module auto-solved by instructor override.',
+              hint: '',
+              unlockedItem: getRoomReward(room)?.title || null,
+            },
+          }));
+          completeRoom(roomIdx);
         }}
         onResetTimer={() => setTimerSeconds(900)}
         onResetAll={handleResetGame}

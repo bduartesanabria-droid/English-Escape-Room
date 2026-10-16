@@ -13,6 +13,8 @@ interface CipherDecoderScreenProps {
   evaluationResult: EvaluationResponse | null;
   onEvaluate: (selectedOptionId: string) => Promise<void>;
   isEvaluating: boolean;
+  questionNumber: number;
+  questionTotal: number;
 }
 
 export const CipherDecoderScreen: React.FC<CipherDecoderScreenProps> = ({
@@ -26,6 +28,8 @@ export const CipherDecoderScreen: React.FC<CipherDecoderScreenProps> = ({
   evaluationResult,
   onEvaluate,
   isEvaluating,
+  questionNumber,
+  questionTotal,
 }) => {
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
   const [failedOptionIds, setFailedOptionIds] = useState<string[]>([]);
@@ -210,6 +214,7 @@ export const CipherDecoderScreen: React.FC<CipherDecoderScreenProps> = ({
           </div>
 
           {/* Reward Showcase Card */}
+          {puzzle.unlockedItem && (
           <div className="bg-[#232a3a] border border-[#3d494c] rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row items-center gap-4 relative overflow-hidden">
             <div className="absolute -right-12 -bottom-12 w-48 h-48 bg-[#4cd7f6]/10 rounded-full blur-2xl pointer-events-none"></div>
 
@@ -256,6 +261,7 @@ export const CipherDecoderScreen: React.FC<CipherDecoderScreenProps> = ({
               </p>
             </div>
           </div>
+          )}
 
           {/* Action Footer Navigation */}
           <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
@@ -316,6 +322,10 @@ export const CipherDecoderScreen: React.FC<CipherDecoderScreenProps> = ({
                   <span className="text-[#3d494c] font-mono text-[10px]">//</span>
                   <span className="font-mono text-[10px] text-[#869397] uppercase">
                     {puzzle.code}
+                  </span>
+                  <span className="text-[#3d494c] font-mono text-[10px]">//</span>
+                  <span className="font-mono text-[10px] text-[#4cd7f6] font-bold uppercase">
+                    Question {questionNumber}/{questionTotal}
                   </span>
                 </div>
                 <h2 className="font-['Plus_Jakarta_Sans'] font-semibold text-lg text-[#dce2f7] tracking-tight">
